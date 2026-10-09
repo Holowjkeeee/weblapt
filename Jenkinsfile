@@ -2,21 +2,15 @@ pipeline {
     agent any
 
     stages {
-        stage('Checkout') {
-            steps {
-                checkout scm
-            }
-        }
-
         stage('Install Python dependencies') {
             steps {
-                bat 'python -m pip install -r requirements.txt'
+                bat '"C:\\Users\\Ученик\\AppData\\Local\\Python\\pythoncore-3.14-64\\python.exe" -m pip install -r requirements.txt'
             }
         }
 
         stage('Run Django tests') {
             steps {
-                bat 'python manage.py test'
+                bat '"C:\\Users\\Ученик\\AppData\\Local\\Python\\pythoncore-3.14-64\\python.exe" manage.py test'
             }
         }
     }
