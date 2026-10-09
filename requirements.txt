@@ -1,0 +1,4 @@
+django==5.2.11
+djangorestframework==3.16.1
+Faker
+openpyxl

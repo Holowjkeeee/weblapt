@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Каталог ноутбуков</title>
+</head>
+<body>
+    <h1>Список ноутбуков</h1>
+    {% for laptop in laptops %}
+        <div>
+            <strong>{{ laptop.id }}.</strong>
+            <strong>{{ laptop.name }}</strong><br>
+            Бренд: {{ laptop.brand.name|default:"-" }}<br>
+            Процессор: {{ laptop.processor_type.name|default:"-" }}<br>
+            Цена: {{ laptop.price }} руб.<br>
+            ОЗУ: {{ laptop.ram|default:"-" }}<br>
+            SSD: {{ laptop.storage|default:"-" }}<br>
+            Описание: {{ laptop.description|default:"-" }}<br>
+            {% if laptop.picture %}
+                <img src="{{ laptop.picture.url }}" alt="{{ laptop.name }}" width="150"><br>
+            {% endif %}
+            <hr>
+        </div>
+    {% empty %}
+        <p>Нет добавленных ноутбуков.</p>
+    {% endfor %}
+</body>
+</html>

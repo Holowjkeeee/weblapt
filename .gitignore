@@ -1,0 +1,30 @@
+# Node
+node_modules/
+client/node_modules/
+dist/
+client/dist/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Django
+db.sqlite3
+media/
+staticfiles/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Environment variables
+.env
+.env.*
