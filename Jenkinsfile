@@ -2,15 +2,21 @@ pipeline {
     agent any
 
     stages {
+        stage('Create virtual environment') {
+            steps {
+                bat 'python -m venv .venv'
+            }
+        }
+
         stage('Install Python dependencies') {
             steps {
-                bat 'python -m pip install -r requirements.txt'
+                bat '.venv\\Scripts\\python.exe -m pip install -r requirements.txt'
             }
         }
 
         stage('Run Django tests') {
             steps {
-                bat 'python manage.py test'
+                bat '.venv\\Scripts\\python.exe manage.py test'
             }
         }
     }
