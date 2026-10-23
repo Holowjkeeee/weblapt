@@ -9,11 +9,40 @@ export default defineConfig({
     vue(),
     vueDevTools(),
   ],
-  resolve: {
-    alias: {
-      '@': fileURLToPath(new URL('./src', import.meta.url))
+
+  preview: {
+    host: '127.0.0.1',
+    port: 4173,
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+      },
+      '/admin': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+      },
+      '/static': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+      },
+      '/media': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+      },
+      '/accounts': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+      },
     },
   },
+
+  resolve: {
+    alias: {
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
+    },
+  },
+
   server: {
     host: '127.0.0.1',
     port: 5173,
@@ -38,6 +67,6 @@ export default defineConfig({
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,
       },
-    }
-  }
+    },
+  },
 })
