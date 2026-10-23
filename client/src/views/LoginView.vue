@@ -58,7 +58,7 @@ async function onLogin() {
               </div>
 
               <button type="submit" class="btn btn-primary w-100" :disabled="loading">
-                {{ loading ? 'Вход...' : 'Войти' }}
+                {{ loading ? 'Вход...' : 'Вход в систему' }}
               </button>
             </form>
           </div>
