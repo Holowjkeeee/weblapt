@@ -1,0 +1,56 @@
+name: weblapt
+
+services:
+  backend:
+    image: weblapt-backend
+
+    environment:
+      DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,backend,nginx
+      SQLITE_PATH: /data/db.sqlite3
+
+    volumes:
+      - sqlite_data:/data
+      - static_data:/app/staticfiles
+      - media_data:/app/media
+
+    expose:
+      - "8000"
+
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/auth/csrf/', timeout=3)"
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  nginx:
+    image: weblapt-nginx
+
+    ports:
+      - "${APP_PORT:-8081}:80"
+
+    volumes:
+      - static_data:/var/www/static:ro
+      - media_data:/var/www/media:ro
+
+    depends_on:
+      backend:
+        condition: service_healthy
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "wget -q --spider http://127.0.0.1/ || exit 1"
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  sqlite_data:
+  static_data:
+  media_data:
