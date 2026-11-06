@@ -242,3 +242,4 @@ stage('Deploy Docker application') {
         }
     }
 }
+}
