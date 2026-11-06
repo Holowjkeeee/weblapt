@@ -144,10 +144,55 @@ pipeline {
             }
         }
 
-        /*
-         * Старое развёртывание из первой лабораторной.
-         * Выполняется только для main.
-         */
+        stage('Test Docker Compose deployment') {
+    steps {
+        withEnv([
+            'APP_PORT=8082',
+            'BACKEND_IMAGE=weblapt-backend:ci',
+            'NGINX_IMAGE=weblapt-nginx:ci'
+        ]) {
+            echo 'Validating Docker Compose configuration...'
+            bat '"%DOCKER_COMPOSE%" -p weblapt-ci config --quiet'
+
+            echo 'Starting temporary Docker containers...'
+            bat '"%DOCKER_COMPOSE%" -p weblapt-ci up -d --no-build --wait --wait-timeout 90'
+
+            echo 'Checking container status...'
+            bat '"%DOCKER_COMPOSE%" -p weblapt-ci ps'
+
+            echo 'Checking Vue frontend through Nginx...'
+            bat 'curl.exe --fail --silent --show-error http://127.0.0.1:8082/ > NUL'
+
+            echo 'Checking Django API through Nginx...'
+            bat 'curl.exe --fail --silent --show-error http://127.0.0.1:8082/api/auth/csrf/ > NUL'
+
+            echo 'Docker integration tests passed.'
+        }
+    }
+
+    post {
+        failure {
+            withEnv([
+                'APP_PORT=8082',
+                'BACKEND_IMAGE=weblapt-backend:ci',
+                'NGINX_IMAGE=weblapt-nginx:ci'
+            ]) {
+                bat(returnStatus: true, script: '"%DOCKER_COMPOSE%" -p weblapt-ci logs --tail 80')
+            }
+        }
+
+        always {
+            withEnv([
+                'APP_PORT=8082',
+                'BACKEND_IMAGE=weblapt-backend:ci',
+                'NGINX_IMAGE=weblapt-nginx:ci'
+            ]) {
+                echo 'Cleaning up test containers...'
+                bat '"%DOCKER_COMPOSE%" -p weblapt-ci down -v --remove-orphans'
+            }
+        }
+    }
+}
         stage('Deploy and start application') {
             when {
                 branch 'main'
