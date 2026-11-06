@@ -28,10 +28,10 @@ services:
       start_period: 10s
 
   nginx:
-    image: weblapt-nginx
+    image: ${BACKEND_IMAGE:-weblapt-backend:latest}
 
     ports:
-      - "${APP_PORT:-8081}:80"
+  - "${APP_PORT:-8081}:80"
 
     volumes:
       - static_data:/var/www/static:ro
