@@ -8,12 +8,22 @@ pipeline {
 
     stages {
         stage('Check tools') {
-            steps {
-                bat '"%PYTHON%" --version'
-                bat 'node --version'
-                bat 'npm --version'
-            }
-        }
+    steps {
+        bat '"%PYTHON%" --version'
+        bat 'node --version'
+        bat 'npm --version'
+
+        echo 'Checking Docker installation...'
+
+        bat 'where docker'
+        bat 'docker --version'
+        bat 'docker compose version'
+
+        echo 'Checking Docker daemon connection...'
+
+        bat 'docker info --format "{{.ServerVersion}}"'
+    }
+}
 
         stage('Create virtual environment') {
             steps {
