@@ -4,6 +4,7 @@ pipeline {
     environment {
         PYTHON = 'C:\\Program Files\\Python313\\python.exe'
         DEPLOY_DIR = 'C:\\JenkinsDeploy\\weblapt'
+        DOCKER = 'C:\\Users\\Ученик\\AppData\\Local\\Programs\\DockerDesktop\\resources\\bin\\docker.exe'
     }
 
     stages {
@@ -13,15 +14,14 @@ pipeline {
         bat 'node --version'
         bat 'npm --version'
 
-        echo 'Checking Docker installation...'
+        echo 'Checking Docker CLI...'
+        bat '"%DOCKER%" --version'
 
-        bat 'where docker'
-        bat 'docker --version'
-        bat 'docker compose version'
+        echo 'Checking Docker Compose...'
+        bat '"%DOCKER%" compose version'
 
-        echo 'Checking Docker daemon connection...'
-
-        bat 'docker info --format "{{.ServerVersion}}"'
+        echo 'Checking Docker Engine connection...'
+        bat '"%DOCKER%" info --format "{{.ServerVersion}}"'
     }
 }
 
