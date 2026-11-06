@@ -1,8 +1,9 @@
+
 name: weblapt
 
 services:
   backend:
-    image: weblapt-backend
+    image: ${BACKEND_IMAGE:-weblapt-backend:latest}
 
     environment:
       DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,backend,nginx
@@ -28,10 +29,10 @@ services:
       start_period: 10s
 
   nginx:
-    image: ${BACKEND_IMAGE:-weblapt-backend:latest}
+    image: ${NGINX_IMAGE:-weblapt-nginx:latest}
 
     ports:
-  - "${APP_PORT:-8081}:80"
+      - "${APP_PORT:-8081}:80"
 
     volumes:
       - static_data:/var/www/static:ro
