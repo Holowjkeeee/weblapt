@@ -4,7 +4,6 @@ pipeline {
 
     environment {
         PYTHON = 'C:\\Program Files\\Python313\\python.exe'
-        DEPLOY_DIR = 'C:\\JenkinsDeploy\\weblapt'
         DOCKER = 'C:\\Users\\Ученик\\AppData\\Local\\Programs\\DockerDesktop\\resources\\bin\\docker.exe'
         DOCKER_COMPOSE = 'C:\\Users\\Ученик\\AppData\\Local\\Programs\\DockerDesktop\\resources\\bin\\docker-compose.exe'
     }
@@ -15,14 +14,8 @@ pipeline {
                 bat '"%PYTHON%" --version'
                 bat 'node --version'
                 bat 'npm --version'
-
-                echo 'Checking Docker CLI...'
                 bat '"%DOCKER%" --version'
-
-                echo 'Checking Docker Compose...'
                 bat '"%DOCKER_COMPOSE%" version'
-
-                echo 'Checking Docker Engine connection...'
                 bat '"%DOCKER%" info --format "{{.ServerVersion}}"'
             }
         }
@@ -43,6 +36,7 @@ pipeline {
 
         stage('Run Django tests') {
             steps {
+                echo 'Running local Django tests with SQLite...'
                 bat '.venv\\Scripts\\python.exe manage.py test'
             }
         }
@@ -59,12 +53,6 @@ pipeline {
             }
         }
 
-        /*
-         * Временная проверка запуска приложения.
-         *
-         * Backend test  = 8100
-         * Frontend test = 4174
-         */
         stage('Check application startup') {
             steps {
                 echo 'Starting temporary Django backend...'
@@ -93,17 +81,7 @@ pipeline {
             post {
                 failure {
                     bat '''
-                    echo ============================
-                    echo BACKEND LOG
-                    echo ============================
-
                     if exist backend-test.log type backend-test.log
-
-                    echo.
-                    echo ============================
-                    echo FRONTEND LOG
-                    echo ============================
-
                     if exist frontend-test.log type frontend-test.log
                     '''
                 }
@@ -113,124 +91,152 @@ pipeline {
 
                     bat '''
                     powershell -NoProfile -Command "$p=Get-NetTCPConnection -LocalPort 8100 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; if($p){Stop-Process -Id $p -Force -ErrorAction SilentlyContinue}"
-
                     powershell -NoProfile -Command "$p=Get-NetTCPConnection -LocalPort 4174 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; if($p){Stop-Process -Id $p -Force -ErrorAction SilentlyContinue}"
-
                     exit /b 0
                     '''
                 }
             }
         }
 
-        /*
-         * Docker CI: сборка образа Django.
-         */
         stage('Build Docker backend image') {
             steps {
-                echo 'Building Django Docker image...'
-
+                echo 'Building Django image with PostgreSQL support...'
                 bat '"%DOCKER%" build -t weblapt-backend:ci -f Dockerfile .'
             }
         }
 
-        /*
-         * Docker CI: сборка образа Nginx с Vue.
-         */
         stage('Build Docker nginx image') {
             steps {
-                echo 'Building Nginx Docker image with Vue frontend...'
-
+                echo 'Building Nginx image with Vue frontend...'
                 bat '"%DOCKER%" build -t weblapt-nginx:ci -f nginx\\Dockerfile .'
             }
         }
 
         stage('Test Docker Compose deployment') {
-    steps {
-        withEnv([
-            'APP_PORT=8082',
-            'BACKEND_IMAGE=weblapt-backend:ci',
-            'NGINX_IMAGE=weblapt-nginx:ci'
-        ]) {
-            echo 'Validating Docker Compose configuration...'
-            bat '"%DOCKER_COMPOSE%" -p weblapt-ci config --quiet'
+            steps {
+                withCredentials([
+                    string(
+                        credentialsId: 'weblapt-postgres-password',
+                        variable: 'POSTGRES_PASSWORD'
+                    )
+                ]) {
+                    withEnv([
+                        'APP_PORT=8082',
+                        'POSTGRES_HOST_PORT=5434',
+                        'BACKEND_IMAGE=weblapt-backend:ci',
+                        'NGINX_IMAGE=weblapt-nginx:ci'
+                    ]) {
+                        echo 'Validating Docker Compose configuration...'
+                        bat '"%DOCKER_COMPOSE%" -p weblapt-ci config --quiet'
 
-            echo 'Starting temporary Docker containers...'
-            bat '"%DOCKER_COMPOSE%" -p weblapt-ci up -d --no-build --wait --wait-timeout 90'
+                        echo 'Starting PostgreSQL, Django and Nginx...'
+                        bat '"%DOCKER_COMPOSE%" -p weblapt-ci up -d --no-build --wait --wait-timeout 120'
 
-            echo 'Checking container status...'
-            bat '"%DOCKER_COMPOSE%" -p weblapt-ci ps'
+                        echo 'Checking container status...'
+                        bat '"%DOCKER_COMPOSE%" -p weblapt-ci ps'
 
-            echo 'Checking Vue frontend through Nginx...'
-            bat 'curl.exe --fail --silent --show-error http://127.0.0.1:8082/ > NUL'
+                        echo 'Running Django tests against PostgreSQL...'
+                        bat '"%DOCKER_COMPOSE%" -p weblapt-ci run --rm --no-deps backend python manage.py test'
 
-            echo 'Checking Django API through Nginx...'
-            bat 'curl.exe --fail --silent --show-error http://127.0.0.1:8082/api/auth/csrf/ > NUL'
+                        echo 'Checking Vue frontend through Nginx...'
+                        bat 'curl.exe --fail --silent --show-error http://127.0.0.1:8082/ > NUL'
 
-            echo 'Docker integration tests passed.'
-        }
-    }
+                        echo 'Checking Django API through Nginx...'
+                        bat 'curl.exe --fail --silent --show-error http://127.0.0.1:8082/api/auth/csrf/ > NUL'
 
-    post {
-        failure {
-            withEnv([
-                'APP_PORT=8082',
-                'BACKEND_IMAGE=weblapt-backend:ci',
-                'NGINX_IMAGE=weblapt-nginx:ci'
-            ]) {
-                bat(returnStatus: true, script: '"%DOCKER_COMPOSE%" -p weblapt-ci logs --tail 80')
+                        echo 'Docker Compose integration tests passed.'
+                    }
+                }
+            }
+
+            post {
+                failure {
+                    withCredentials([
+                        string(
+                            credentialsId: 'weblapt-postgres-password',
+                            variable: 'POSTGRES_PASSWORD'
+                        )
+                    ]) {
+                        withEnv([
+                            'APP_PORT=8082',
+                            'POSTGRES_HOST_PORT=5434'
+                        ]) {
+                            echo 'Showing failed container logs...'
+                            bat(
+                                returnStatus: true,
+                                script: '"%DOCKER_COMPOSE%" -p weblapt-ci logs --tail 100'
+                            )
+                        }
+                    }
+                }
+
+                always {
+                    withCredentials([
+                        string(
+                            credentialsId: 'weblapt-postgres-password',
+                            variable: 'POSTGRES_PASSWORD'
+                        )
+                    ]) {
+                        withEnv([
+                            'APP_PORT=8082',
+                            'POSTGRES_HOST_PORT=5434'
+                        ]) {
+                            echo 'Cleaning temporary CI containers and volumes...'
+                            bat(
+                                returnStatus: true,
+                                script: '"%DOCKER_COMPOSE%" -p weblapt-ci down -v --remove-orphans'
+                            )
+                        }
+                    }
+                }
             }
         }
 
-        always {
-            withEnv([
-                'APP_PORT=8082',
-                'BACKEND_IMAGE=weblapt-backend:ci',
-                'NGINX_IMAGE=weblapt-nginx:ci'
-            ]) {
-                echo 'Cleaning up test containers...'
-                bat '"%DOCKER_COMPOSE%" -p weblapt-ci down -v --remove-orphans'
+        stage('Deploy Docker application') {
+            when {
+                branch 'main'
+            }
+
+            steps {
+                echo 'Preparing production Docker images...'
+
+                bat '"%DOCKER%" tag weblapt-backend:ci weblapt-backend:latest'
+                bat '"%DOCKER%" tag weblapt-nginx:ci weblapt-nginx:latest'
+
+                withCredentials([
+                    string(
+                        credentialsId: 'weblapt-postgres-password',
+                        variable: 'POSTGRES_PASSWORD'
+                    )
+                ]) {
+                    withEnv([
+                        'APP_PORT=8081',
+                        'POSTGRES_HOST_PORT=5433',
+                        'BACKEND_IMAGE=weblapt-backend:latest',
+                        'NGINX_IMAGE=weblapt-nginx:latest'
+                    ]) {
+                        echo 'Validating production Docker Compose...'
+                        bat '"%DOCKER_COMPOSE%" -p weblapt config --quiet'
+
+                        echo 'Deploying PostgreSQL, Django and Nginx...'
+                        bat '"%DOCKER_COMPOSE%" -p weblapt up -d --no-build --wait --wait-timeout 120'
+
+                        echo 'Checking production containers...'
+                        bat '"%DOCKER_COMPOSE%" -p weblapt ps'
+
+                        echo 'Checking production frontend...'
+                        bat 'curl.exe --fail --silent --show-error http://127.0.0.1:8081/ > NUL'
+
+                        echo 'Checking production Django API...'
+                        bat 'curl.exe --fail --silent --show-error http://127.0.0.1:8081/api/auth/csrf/ > NUL'
+                    }
+                }
+
+                echo 'Production deployment completed successfully.'
+                echo 'Application: http://localhost:8081'
             }
         }
     }
-}
-       
-stage('Deploy Docker application') {
-    when {
-        branch 'main'
-    }
-
-    steps {
-        echo 'Preparing Docker images for production...'
-
-        bat '"%DOCKER%" tag weblapt-backend:ci weblapt-backend:latest'
-        bat '"%DOCKER%" tag weblapt-nginx:ci weblapt-nginx:latest'
-
-        withEnv([
-            'APP_PORT=8081',
-            'BACKEND_IMAGE=weblapt-backend:latest',
-            'NGINX_IMAGE=weblapt-nginx:latest'
-        ]) {
-            echo 'Validating production configuration...'
-            bat '"%DOCKER_COMPOSE%" -p weblapt config --quiet'
-
-            echo 'Deploying Docker containers...'
-            bat '"%DOCKER_COMPOSE%" -p weblapt up -d --no-build --force-recreate --wait --wait-timeout 90'
-
-            echo 'Checking production containers...'
-            bat '"%DOCKER_COMPOSE%" -p weblapt ps'
-
-            echo 'Checking production frontend...'
-            bat 'curl.exe --fail --silent --show-error http://127.0.0.1:8081/ > NUL'
-
-            echo 'Checking production Django API...'
-            bat 'curl.exe --fail --silent --show-error http://127.0.0.1:8081/api/auth/csrf/ > NUL'
-        }
-
-        echo 'Production deployment completed successfully.'
-        echo 'Application URL: http://localhost:8081'
-    }
-}
-
 
     post {
         success {
@@ -238,8 +244,7 @@ stage('Deploy Docker application') {
         }
 
         failure {
-            echo 'Pipeline failed. Deployment was not completed successfully.'
+            echo 'Pipeline failed. Check the failed stage and logs.'
         }
     }
-}
 }
