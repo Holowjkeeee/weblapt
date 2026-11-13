@@ -1,9 +1,11 @@
+
 pipeline {
     agent any
 
     environment {
         PYTHON = 'C:\\Program Files\\Python313\\python.exe'
-        DEPLOY_DIR = 'C:\\JenkinsDeploy\\weblapt'
+        DOCKER = 'C:\\Users\\Ученик\\AppData\\Local\\Programs\\DockerDesktop\\resources\\bin\\docker.exe'
+        DOCKER_COMPOSE = 'C:\\Users\\Ученик\\AppData\\Local\\Programs\\DockerDesktop\\resources\\bin\\docker-compose.exe'
     }
 
     stages {
@@ -12,6 +14,9 @@ pipeline {
                 bat '"%PYTHON%" --version'
                 bat 'node --version'
                 bat 'npm --version'
+                bat '"%DOCKER%" --version'
+                bat '"%DOCKER_COMPOSE%" version'
+                bat '"%DOCKER%" info --format "{{.ServerVersion}}"'
             }
         }
 
@@ -31,6 +36,7 @@ pipeline {
 
         stage('Run Django tests') {
             steps {
+                echo 'Running local Django tests with SQLite...'
                 bat '.venv\\Scripts\\python.exe manage.py test'
             }
         }
@@ -47,15 +53,6 @@ pipeline {
             }
         }
 
-        /*
-         * Временная проверка.
-         *
-         * Используем отдельные порты, чтобы не мешать
-         * уже развернутой production-версии.
-         *
-         * Backend test  = 8100
-         * Frontend test = 4174
-         */
         stage('Check application startup') {
             steps {
                 echo 'Starting temporary Django backend...'
@@ -84,17 +81,7 @@ pipeline {
             post {
                 failure {
                     bat '''
-                    echo ============================
-                    echo BACKEND LOG
-                    echo ============================
-
                     if exist backend-test.log type backend-test.log
-
-                    echo.
-                    echo ============================
-                    echo FRONTEND LOG
-                    echo ============================
-
                     if exist frontend-test.log type frontend-test.log
                     '''
                 }
@@ -104,137 +91,149 @@ pipeline {
 
                     bat '''
                     powershell -NoProfile -Command "$p=Get-NetTCPConnection -LocalPort 8100 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; if($p){Stop-Process -Id $p -Force -ErrorAction SilentlyContinue}"
-
                     powershell -NoProfile -Command "$p=Get-NetTCPConnection -LocalPort 4174 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; if($p){Stop-Process -Id $p -Force -ErrorAction SilentlyContinue}"
-
                     exit /b 0
                     '''
                 }
             }
         }
 
-        /*
-         * Настоящий Deploy.
-         * Выполняется только для main.
-         */
-        stage('Deploy and start application') {
+        stage('Build Docker backend image') {
+            steps {
+                echo 'Building Django image with PostgreSQL support...'
+                bat '"%DOCKER%" build -t weblapt-backend:ci -f Dockerfile .'
+            }
+        }
+
+        stage('Build Docker nginx image') {
+            steps {
+                echo 'Building Nginx image with Vue frontend...'
+                bat '"%DOCKER%" build -t weblapt-nginx:ci -f nginx\\Dockerfile .'
+            }
+        }
+
+        stage('Test Docker Compose deployment') {
+            steps {
+                withCredentials([
+                    string(
+                        credentialsId: 'weblapt-postgres-password',
+                        variable: 'POSTGRES_PASSWORD'
+                    )
+                ]) {
+                    withEnv([
+                        'APP_PORT=8082',
+                        'POSTGRES_HOST_PORT=5434',
+                        'BACKEND_IMAGE=weblapt-backend:ci',
+                        'NGINX_IMAGE=weblapt-nginx:ci'
+                    ]) {
+                        echo 'Validating Docker Compose configuration...'
+                        bat '"%DOCKER_COMPOSE%" -p weblapt-ci config --quiet'
+
+                        echo 'Starting PostgreSQL, Django and Nginx...'
+                        bat '"%DOCKER_COMPOSE%" -p weblapt-ci up -d --no-build --wait --wait-timeout 120'
+
+                        echo 'Checking container status...'
+                        bat '"%DOCKER_COMPOSE%" -p weblapt-ci ps'
+
+                        echo 'Running Django tests against PostgreSQL...'
+                        bat '"%DOCKER_COMPOSE%" -p weblapt-ci run --rm --no-deps backend python manage.py test'
+
+                        echo 'Checking Vue frontend through Nginx...'
+                        bat 'curl.exe --fail --silent --show-error http://127.0.0.1:8082/ > NUL'
+
+                        echo 'Checking Django API through Nginx...'
+                        bat 'curl.exe --fail --silent --show-error http://127.0.0.1:8082/api/auth/csrf/ > NUL'
+
+                        echo 'Docker Compose integration tests passed.'
+                    }
+                }
+            }
+
+            post {
+                failure {
+                    withCredentials([
+                        string(
+                            credentialsId: 'weblapt-postgres-password',
+                            variable: 'POSTGRES_PASSWORD'
+                        )
+                    ]) {
+                        withEnv([
+                            'APP_PORT=8082',
+                            'POSTGRES_HOST_PORT=5434'
+                        ]) {
+                            echo 'Showing failed container logs...'
+                            bat(
+                                returnStatus: true,
+                                script: '"%DOCKER_COMPOSE%" -p weblapt-ci logs --tail 100'
+                            )
+                        }
+                    }
+                }
+
+                always {
+                    withCredentials([
+                        string(
+                            credentialsId: 'weblapt-postgres-password',
+                            variable: 'POSTGRES_PASSWORD'
+                        )
+                    ]) {
+                        withEnv([
+                            'APP_PORT=8082',
+                            'POSTGRES_HOST_PORT=5434'
+                        ]) {
+                            echo 'Cleaning temporary CI containers and volumes...'
+                            bat(
+                                returnStatus: true,
+                                script: '"%DOCKER_COMPOSE%" -p weblapt-ci down -v --remove-orphans'
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Deploy Docker application') {
             when {
                 branch 'main'
             }
 
             steps {
-                echo 'Deploying application from main branch...'
+                echo 'Preparing production Docker images...'
 
-                /*
-                 * Копирование проверенной версии.
-                 */
-                bat 'if not exist "%DEPLOY_DIR%" mkdir "%DEPLOY_DIR%"'
+                bat '"%DOCKER%" tag weblapt-backend:ci weblapt-backend:latest'
+                bat '"%DOCKER%" tag weblapt-nginx:ci weblapt-nginx:latest'
 
-                bat '''
-                robocopy . "%DEPLOY_DIR%" /E /XD .git .venv node_modules /XF db.sqlite3 backend-test.log frontend-test.log
+                withCredentials([
+                    string(
+                        credentialsId: 'weblapt-postgres-password',
+                        variable: 'POSTGRES_PASSWORD'
+                    )
+                ]) {
+                    withEnv([
+                        'APP_PORT=8081',
+                        'POSTGRES_HOST_PORT=5433',
+                        'BACKEND_IMAGE=weblapt-backend:latest',
+                        'NGINX_IMAGE=weblapt-nginx:latest'
+                    ]) {
+                        echo 'Validating production Docker Compose...'
+                        bat '"%DOCKER_COMPOSE%" -p weblapt config --quiet'
 
-                if %ERRORLEVEL% GEQ 8 exit /b %ERRORLEVEL%
-                exit /b 0
-                '''
+                        echo 'Deploying PostgreSQL, Django and Nginx...'
+                        bat '"%DOCKER_COMPOSE%" -p weblapt up -d --no-build --wait --wait-timeout 120'
 
-                /*
-                 * Python environment deployed application.
-                 */
-                bat '''
-                if not exist "%DEPLOY_DIR%\\.venv\\Scripts\\python.exe" (
-                    "%PYTHON%" -m venv "%DEPLOY_DIR%\\.venv"
-                )
-                '''
+                        echo 'Checking production containers...'
+                        bat '"%DOCKER_COMPOSE%" -p weblapt ps'
 
-                bat '''
-                "%DEPLOY_DIR%\\.venv\\Scripts\\python.exe" -m pip install --upgrade pip
-                "%DEPLOY_DIR%\\.venv\\Scripts\\python.exe" -m pip install -r "%DEPLOY_DIR%\\requirements.txt"
-                '''
+                        echo 'Checking production frontend...'
+                        bat 'curl.exe --fail --silent --show-error http://127.0.0.1:8081/ > NUL'
 
-                /*
-                 * Database.
-                 */
-                bat '''
-                "%DEPLOY_DIR%\\.venv\\Scripts\\python.exe" "%DEPLOY_DIR%\\manage.py" check
-                "%DEPLOY_DIR%\\.venv\\Scripts\\python.exe" "%DEPLOY_DIR%\\manage.py" migrate
-                '''
-
-                /*
-                 * Frontend dependencies are needed because Vite Preview
-                 * will serve the already generated dist directory.
-                 */
-                bat '''
-                cd /d "%DEPLOY_DIR%\\client"
-                npm ci
-                '''
-
-                /*
-                 * Check production build exists.
-                 */
-                bat '''
-                if not exist "%DEPLOY_DIR%\\client\\dist\\index.html" (
-                    echo Frontend dist was not found.
-                    exit /b 1
-                )
-                '''
-
-                /*
-                 * Stop previous production version.
-                 *
-                 * Backend production  = 8001
-                 * Frontend production = 4173
-                 */
-                bat '''
-                powershell -NoProfile -Command "$p=Get-NetTCPConnection -LocalPort 8001 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; if($p){Stop-Process -Id $p -Force -ErrorAction SilentlyContinue}"
-
-                powershell -NoProfile -Command "$p=Get-NetTCPConnection -LocalPort 4173 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; if($p){Stop-Process -Id $p -Force -ErrorAction SilentlyContinue}"
-
-                exit /b 0
-                '''
-
-                /*
-                 * Important:
-                 * Jenkins must not kill these processes after Pipeline ends.
-                 */
-                withEnv(['JENKINS_NODE_COOKIE=weblapt-production']) {
-
-                    echo 'Starting deployed Django backend...'
-
-                    bat '''
-                    powershell -NoProfile -Command "Start-Process -FilePath '%DEPLOY_DIR%\\.venv\\Scripts\\waitress-serve.exe' -ArgumentList '--listen=127.0.0.1:8001','app.wsgi:application' -WorkingDirectory '%DEPLOY_DIR%' -RedirectStandardOutput '%DEPLOY_DIR%\\backend-prod.log' -RedirectStandardError '%DEPLOY_DIR%\\backend-prod-error.log'"
-                    '''
-
-                    echo 'Starting deployed Vue frontend...'
-
-                    bat '''
-                    powershell -NoProfile -Command "Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','npm run preview -- --host 127.0.0.1 --port 4173 > frontend-prod.log 2>&1' -WorkingDirectory '%DEPLOY_DIR%\\client'"
-                    '''
+                        echo 'Checking production Django API...'
+                        bat 'curl.exe --fail --silent --show-error http://127.0.0.1:8081/api/auth/csrf/ > NUL'
+                    }
                 }
 
-                /*
-                 * Check deployed backend.
-                 */
-                bat '''
-                powershell -NoProfile -Command "$limit=(Get-Date).AddSeconds(60); while((Get-Date) -lt $limit) { try { $r=Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8001/api/auth/csrf/' -TimeoutSec 3; if ($r.StatusCode -eq 200) { Write-Host 'DEPLOYED BACKEND: SUCCESS'; exit 0 } } catch {}; Start-Sleep -Seconds 2 }; Write-Host 'DEPLOYED BACKEND: FAILED'; exit 1"
-                '''
-
-                /*
-                 * Check deployed frontend.
-                 */
-                bat '''
-                powershell -NoProfile -Command "$limit=(Get-Date).AddSeconds(60); while((Get-Date) -lt $limit) { try { $r=Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:4173/' -TimeoutSec 3; if ($r.StatusCode -eq 200) { Write-Host 'DEPLOYED FRONTEND: SUCCESS'; exit 0 } } catch {}; Start-Sleep -Seconds 2 }; Write-Host 'DEPLOYED FRONTEND: FAILED'; exit 1"
-                '''
-
-                /*
-                 * Integration check:
-                 * request comes to Vue server and is proxied to Django.
-                 */
-                bat '''
-                curl.exe --fail --silent --show-error http://127.0.0.1:4173/api/auth/csrf/ > NUL
-                '''
-
-                echo 'Deployment completed successfully.'
-                echo 'Application is running at http://127.0.0.1:4173'
+                echo 'Production deployment completed successfully.'
+                echo 'Application: http://localhost:8081'
             }
         }
     }
@@ -245,7 +244,7 @@ pipeline {
         }
 
         failure {
-            echo 'Pipeline failed. Deployment was not completed successfully.'
+            echo 'Pipeline failed. Check the failed stage and logs.'
         }
     }
 }
