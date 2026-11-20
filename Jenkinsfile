@@ -2,6 +2,10 @@
 pipeline {
     agent any
 
+    options {
+        disableConcurrentBuilds()
+    }
+
     environment {
         PYTHON = 'C:\\Program Files\\Python313\\python.exe'
         DOCKER = 'C:\\Users\\Ученик\\AppData\\Local\\Programs\\DockerDesktop\\resources\\bin\\docker.exe'
@@ -9,6 +13,16 @@ pipeline {
     }
 
     stages {
+        stage('Prepare build') {
+            steps {
+                script {
+                    def branch = (env.BRANCH_NAME ?: 'manual').toLowerCase().replaceAll(/[^a-z0-9_.-]/, '-')
+                    env.IMAGE_TAG = "${branch}-${env.BUILD_NUMBER}"
+                    echo "Docker image tag: ${env.IMAGE_TAG}"
+                }
+            }
+        }
+
         stage('Check tools') {
             steps {
                 bat '"%PYTHON%" --version'
@@ -36,8 +50,10 @@ pipeline {
 
         stage('Run Django tests') {
             steps {
-                echo 'Running local Django tests with SQLite...'
-                bat '.venv\\Scripts\\python.exe manage.py test'
+                withEnv(['DB_ENGINE=sqlite3']) {
+                    echo 'Running Django tests...'
+                    bat '.venv\\Scripts\\python.exe manage.py test'
+                }
             }
         }
 
@@ -55,93 +71,88 @@ pipeline {
 
         stage('Check application startup') {
             steps {
-                echo 'Starting temporary Django backend...'
+                withEnv(['DB_ENGINE=sqlite3']) {
+                    echo 'Starting temporary Django backend...'
 
-                bat '''
-                start "" /B cmd /C ".venv\\Scripts\\python.exe manage.py runserver 127.0.0.1:8100 --noreload > backend-test.log 2>&1"
-                '''
+                    bat '''
+                    start "" /B cmd /C ".venv\\Scripts\\python.exe manage.py runserver 127.0.0.1:8100 --noreload > backend-test.log 2>&1"
+                    '''
 
-                bat '''
-                powershell -NoProfile -Command "$limit=(Get-Date).AddSeconds(60); while((Get-Date) -lt $limit) { try { $r=Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8100/api/auth/csrf/' -TimeoutSec 3; if ($r.StatusCode -eq 200) { Write-Host 'Backend startup check SUCCESS'; exit 0 } } catch {}; Start-Sleep -Seconds 2 }; Write-Host 'Backend startup check FAILED'; exit 1"
-                '''
+                    bat '''
+                    powershell -NoProfile -Command "$limit=(Get-Date).AddSeconds(60); while((Get-Date) -lt $limit) { try { $r=Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8100/api/auth/csrf/' -TimeoutSec 3; if ($r.StatusCode -eq 200) { Write-Host 'Backend startup check SUCCESS'; exit 0 } } catch {}; Start-Sleep -Seconds 2 }; Write-Host 'Backend startup check FAILED'; exit 1"
+                    '''
 
-                echo 'Starting temporary Vue frontend...'
+                    echo 'Starting temporary Vue frontend...'
 
-                bat '''
-                start "" /B cmd /C "cd client && npm run preview -- --host 127.0.0.1 --port 4174 > ..\\frontend-test.log 2>&1"
-                '''
+                    bat '''
+                    start "" /B cmd /C "cd client && npm run preview -- --host 127.0.0.1 --port 4174 > ..\\frontend-test.log 2>&1"
+                    '''
 
-                bat '''
-                powershell -NoProfile -Command "$limit=(Get-Date).AddSeconds(60); while((Get-Date) -lt $limit) { try { $r=Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:4174/' -TimeoutSec 3; if ($r.StatusCode -eq 200) { Write-Host 'Frontend startup check SUCCESS'; exit 0 } } catch {}; Start-Sleep -Seconds 2 }; Write-Host 'Frontend startup check FAILED'; exit 1"
-                '''
+                    bat '''
+                    powershell -NoProfile -Command "$limit=(Get-Date).AddSeconds(60); while((Get-Date) -lt $limit) { try { $r=Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:4174/' -TimeoutSec 3; if ($r.StatusCode -eq 200) { Write-Host 'Frontend startup check SUCCESS'; exit 0 } } catch {}; Start-Sleep -Seconds 2 }; Write-Host 'Frontend startup check FAILED'; exit 1"
+                    '''
+                }
 
-                echo 'Backend and frontend startup checks passed.'
+                echo 'Application startup checks passed.'
             }
 
             post {
                 failure {
-                    bat '''
-                    if exist backend-test.log type backend-test.log
-                    if exist frontend-test.log type frontend-test.log
-                    '''
+                    bat(returnStatus: true, script: 'if exist backend-test.log type backend-test.log')
+                    bat(returnStatus: true, script: 'if exist frontend-test.log type frontend-test.log')
                 }
 
                 always {
                     echo 'Stopping temporary test servers...'
 
-                    bat '''
+                    bat(returnStatus: true, script: '''
                     powershell -NoProfile -Command "$p=Get-NetTCPConnection -LocalPort 8100 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; if($p){Stop-Process -Id $p -Force -ErrorAction SilentlyContinue}"
                     powershell -NoProfile -Command "$p=Get-NetTCPConnection -LocalPort 4174 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; if($p){Stop-Process -Id $p -Force -ErrorAction SilentlyContinue}"
                     exit /b 0
-                    '''
+                    ''')
                 }
             }
         }
 
         stage('Build Docker backend image') {
             steps {
-                echo 'Building Django image with PostgreSQL support...'
-                bat '"%DOCKER%" build -t weblapt-backend:ci -f Dockerfile .'
+                echo 'Building Django Docker image...'
+                bat '"%DOCKER%" build -t weblapt-backend:%IMAGE_TAG% -f Dockerfile .'
             }
         }
 
         stage('Build Docker nginx image') {
             steps {
-                echo 'Building Nginx image with Vue frontend...'
-                bat '"%DOCKER%" build -t weblapt-nginx:ci -f nginx\\Dockerfile .'
+                echo 'Building Nginx Docker image...'
+                bat '"%DOCKER%" build -t weblapt-nginx:%IMAGE_TAG% -f nginx\\Dockerfile .'
             }
         }
 
         stage('Test Docker Compose deployment') {
             steps {
-                withCredentials([
-                    string(
-                        credentialsId: 'weblapt-postgres-password',
-                        variable: 'POSTGRES_PASSWORD'
-                    )
-                ]) {
+                withCredentials([string(credentialsId: 'weblapt-postgres-password', variable: 'POSTGRES_PASSWORD')]) {
                     withEnv([
                         'APP_PORT=8082',
                         'POSTGRES_HOST_PORT=5434',
-                        'BACKEND_IMAGE=weblapt-backend:ci',
-                        'NGINX_IMAGE=weblapt-nginx:ci'
+                        "BACKEND_IMAGE=weblapt-backend:${env.IMAGE_TAG}",
+                        "NGINX_IMAGE=weblapt-nginx:${env.IMAGE_TAG}"
                     ]) {
                         echo 'Validating Docker Compose configuration...'
                         bat '"%DOCKER_COMPOSE%" -p weblapt-ci config --quiet'
 
-                        echo 'Starting PostgreSQL, Django and Nginx...'
+                        echo 'Starting CI PostgreSQL, Django and Nginx...'
                         bat '"%DOCKER_COMPOSE%" -p weblapt-ci up -d --no-build --wait --wait-timeout 120'
 
-                        echo 'Checking container status...'
+                        echo 'Checking test containers...'
                         bat '"%DOCKER_COMPOSE%" -p weblapt-ci ps'
 
                         echo 'Running Django tests against PostgreSQL...'
                         bat '"%DOCKER_COMPOSE%" -p weblapt-ci run --rm --no-deps backend python manage.py test'
 
-                        echo 'Checking Vue frontend through Nginx...'
+                        echo 'Checking Vue frontend...'
                         bat 'curl.exe --fail --silent --show-error http://127.0.0.1:8082/ > NUL'
 
-                        echo 'Checking Django API through Nginx...'
+                        echo 'Checking Django API...'
                         bat 'curl.exe --fail --silent --show-error http://127.0.0.1:8082/api/auth/csrf/ > NUL'
 
                         echo 'Docker Compose integration tests passed.'
@@ -151,43 +162,72 @@ pipeline {
 
             post {
                 failure {
-                    withCredentials([
-                        string(
-                            credentialsId: 'weblapt-postgres-password',
-                            variable: 'POSTGRES_PASSWORD'
-                        )
-                    ]) {
+                    withCredentials([string(credentialsId: 'weblapt-postgres-password', variable: 'POSTGRES_PASSWORD')]) {
                         withEnv([
                             'APP_PORT=8082',
-                            'POSTGRES_HOST_PORT=5434'
+                            'POSTGRES_HOST_PORT=5434',
+                            "BACKEND_IMAGE=weblapt-backend:${env.IMAGE_TAG}",
+                            "NGINX_IMAGE=weblapt-nginx:${env.IMAGE_TAG}"
                         ]) {
-                            echo 'Showing failed container logs...'
-                            bat(
-                                returnStatus: true,
-                                script: '"%DOCKER_COMPOSE%" -p weblapt-ci logs --tail 100'
-                            )
+                            echo 'Showing CI container logs...'
+                            bat(returnStatus: true, script: '"%DOCKER_COMPOSE%" -p weblapt-ci logs --tail 100')
                         }
                     }
                 }
 
                 always {
-                    withCredentials([
-                        string(
-                            credentialsId: 'weblapt-postgres-password',
-                            variable: 'POSTGRES_PASSWORD'
-                        )
-                    ]) {
+                    withCredentials([string(credentialsId: 'weblapt-postgres-password', variable: 'POSTGRES_PASSWORD')]) {
                         withEnv([
                             'APP_PORT=8082',
-                            'POSTGRES_HOST_PORT=5434'
+                            'POSTGRES_HOST_PORT=5434',
+                            "BACKEND_IMAGE=weblapt-backend:${env.IMAGE_TAG}",
+                            "NGINX_IMAGE=weblapt-nginx:${env.IMAGE_TAG}"
                         ]) {
-                            echo 'Cleaning temporary CI containers and volumes...'
-                            bat(
-                                returnStatus: true,
-                                script: '"%DOCKER_COMPOSE%" -p weblapt-ci down -v --remove-orphans'
-                            )
+                            echo 'Removing CI containers and temporary volumes...'
+                            bat(returnStatus: true, script: '"%DOCKER_COMPOSE%" -p weblapt-ci down -v --remove-orphans')
                         }
                     }
+                }
+            }
+        }
+
+        stage('Push Docker images to Docker Hub') {
+            when {
+                branch 'main'
+            }
+
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials', usernameVariable: 'HUB_USER', passwordVariable: 'HUB_TOKEN')]) {
+                    echo 'Logging in to Docker Hub...'
+
+                    bat '''
+                    @echo off
+                    powershell -NoProfile -NonInteractive -Command "$env:HUB_TOKEN | & $env:DOCKER login --username $env:HUB_USER --password-stdin; exit $LASTEXITCODE"
+                    '''
+
+                    echo 'Tagging images for Docker Hub...'
+
+                    bat '"%DOCKER%" tag weblapt-backend:%IMAGE_TAG% "%HUB_USER%/weblapt-backend:latest"'
+                    bat '"%DOCKER%" tag weblapt-nginx:%IMAGE_TAG% "%HUB_USER%/weblapt-nginx:latest"'
+
+                    bat '"%DOCKER%" tag weblapt-backend:%IMAGE_TAG% "%HUB_USER%/weblapt-backend:build-%BUILD_NUMBER%"'
+                    bat '"%DOCKER%" tag weblapt-nginx:%IMAGE_TAG% "%HUB_USER%/weblapt-nginx:build-%BUILD_NUMBER%"'
+
+                    echo 'Pushing backend image...'
+                    bat '"%DOCKER%" push "%HUB_USER%/weblapt-backend:latest"'
+                    bat '"%DOCKER%" push "%HUB_USER%/weblapt-backend:build-%BUILD_NUMBER%"'
+
+                    echo 'Pushing Nginx image...'
+                    bat '"%DOCKER%" push "%HUB_USER%/weblapt-nginx:latest"'
+                    bat '"%DOCKER%" push "%HUB_USER%/weblapt-nginx:build-%BUILD_NUMBER%"'
+
+                    echo 'Docker Hub publishing completed successfully.'
+                }
+            }
+
+            post {
+                always {
+                    bat(returnStatus: true, script: '"%DOCKER%" logout')
                 }
             }
         }
@@ -198,17 +238,12 @@ pipeline {
             }
 
             steps {
-                echo 'Preparing production Docker images...'
+                echo 'Preparing production images...'
 
-                bat '"%DOCKER%" tag weblapt-backend:ci weblapt-backend:latest'
-                bat '"%DOCKER%" tag weblapt-nginx:ci weblapt-nginx:latest'
+                bat '"%DOCKER%" tag weblapt-backend:%IMAGE_TAG% weblapt-backend:latest'
+                bat '"%DOCKER%" tag weblapt-nginx:%IMAGE_TAG% weblapt-nginx:latest'
 
-                withCredentials([
-                    string(
-                        credentialsId: 'weblapt-postgres-password',
-                        variable: 'POSTGRES_PASSWORD'
-                    )
-                ]) {
+                withCredentials([string(credentialsId: 'weblapt-postgres-password', variable: 'POSTGRES_PASSWORD')]) {
                     withEnv([
                         'APP_PORT=8081',
                         'POSTGRES_HOST_PORT=5433',
@@ -218,8 +253,11 @@ pipeline {
                         echo 'Validating production Docker Compose...'
                         bat '"%DOCKER_COMPOSE%" -p weblapt config --quiet'
 
-                        echo 'Deploying PostgreSQL, Django and Nginx...'
-                        bat '"%DOCKER_COMPOSE%" -p weblapt up -d --no-build --wait --wait-timeout 120'
+                        echo 'Ensuring production PostgreSQL is running...'
+                        bat '"%DOCKER_COMPOSE%" -p weblapt up -d --no-build --wait --wait-timeout 120 postgres'
+
+                        echo 'Updating Django and Nginx containers...'
+                        bat '"%DOCKER_COMPOSE%" -p weblapt up -d --no-build --no-deps --force-recreate --wait --wait-timeout 120 backend nginx'
 
                         echo 'Checking production containers...'
                         bat '"%DOCKER_COMPOSE%" -p weblapt ps'
